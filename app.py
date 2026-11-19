@@ -26,6 +26,7 @@ from inventory_models import (
     calculate_newsvendor,
 )
 from classification import classify_inventory_multicriteria
+from assistant import generate_inventory_response
 
 # -----------------------------------------------------------------------------
 # APP CONFIGURATION
@@ -75,6 +76,7 @@ module = st.sidebar.radio(
         "4. Fixed-Period Review Model",
         "5. Newsvendor Model",
         "6. Multicriteria Inventory Classification",
+        "7. AI Inventory Decision Assistant",
     ],
 )
 
@@ -609,3 +611,79 @@ elif module == "6. Multicriteria Inventory Classification":
                 mime="text/csv",
                 type="primary",
             )
+
+
+# =============================================================================
+# MODULE 7: AI INVENTORY DECISION ASSISTANT (PROMPTS & RESPONSES)
+# =============================================================================
+elif module == "7. AI Inventory Decision Assistant":
+    st.header("7. AI Inventory Decision Assistant")
+    st.write(
+        "Enter natural language prompts to query, inspect, and generate data-driven decision responses "
+        "based on your uploaded inventory dataset."
+    )
+
+    df_data = st.session_state["inventory_df"]
+
+    if df_data is None:
+        st.warning(
+            "⚠️ No inventory dataset loaded. Please upload `ProjectDataV2_UTF8.csv` in the **sidebar** first."
+        )
+    else:
+        # Ensure we have the classified data ready
+        if "classified_df" not in st.session_state or st.session_state["classified_df"] is None:
+            df_result, summary_df = classify_inventory_multicriteria(
+                df=df_data,
+                item_col="Item Number",
+                sales_col="Sales ($)",
+                hits_col="Hits",
+            )
+            st.session_state["classified_df"] = df_result
+            st.session_state["summary_df"] = summary_df
+        else:
+            df_result = st.session_state["classified_df"]
+            summary_df = st.session_state["summary_df"]
+
+        st.success(f"Connected to Active Inventory Dataset: **{len(df_result):,} items** loaded & classified.")
+
+        # Quick Prompt Buttons
+        st.subheader("💡 Quick Prompts")
+        col_q1, col_q2, col_q3, col_q4 = st.columns(4)
+
+        selected_quick_prompt = None
+        if col_q1.button("📊 Inventory Overview", use_container_width=True):
+            selected_quick_prompt = "Give me an overview and breakdown of our inventory classification."
+        if col_q2.button("🏷️ Class A Deep Dive", use_container_width=True):
+            selected_quick_prompt = "Show me the top items and summary for Class A."
+        if col_q3.button("📦 High Hits / Low Sales", use_container_width=True):
+            selected_quick_prompt = "Which items have high pick hits but low sales dollars?"
+        if col_q4.button("📋 Policy Recommendations", use_container_width=True):
+            selected_quick_prompt = "What inventory replenishment policies do you recommend for each class?"
+
+        st.markdown("---")
+
+        # User Prompt Input
+        initial_val = selected_quick_prompt if selected_quick_prompt else ""
+        user_prompt = st.text_area(
+            "💬 Enter your prompt / question about the inventory data:",
+            value=initial_val,
+            placeholder="e.g. 'Show Class A items', 'What is the total sales for Class D?', 'Which items have high hits but low sales?', or lookup specific item numbers...",
+            height=100,
+        )
+
+        submit_btn = st.button("Generate Response", type="primary")
+
+        if submit_btn or selected_quick_prompt:
+            active_prompt = user_prompt if user_prompt.strip() else selected_quick_prompt
+            if not active_prompt:
+                st.warning("Please enter a prompt first.")
+            else:
+                with st.spinner("Analyzing inventory dataset and generating response..."):
+                    response_text = generate_inventory_response(
+                        prompt=active_prompt,
+                        df=df_result,
+                        summary_df=summary_df,
+                    )
+                st.markdown("---")
+                st.markdown(response_text)
+
