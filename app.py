@@ -1,14 +1,15 @@
 """
 Inventory Decision Agent
-An interactive decision support application for inventory analytics and optimization.
+An interactive decision support application for inventory analytics, optimization,
+and multicriteria classification.
 
-Features:
-- Economic Order Quantity (EOQ) with cost breakdown and sensitivity
-- All-Units Quantity Discount Analyzer
-- Safety Stock and Reorder Point (Continuous Review) with risk visualization
-- Fixed-Period Review Model (Periodic Review / Order-up-to Level)
-- Newsvendor Single-Period Stochastic Model
-- CSV Data Uploader & Multicriteria Inventory Classification (Sales $ and Hits)
+Retains all core inventory modules:
+1. Classic Economic Order Quantity (EOQ)
+2. All-Units Quantity Discount Analyzer
+3. Safety Stock and Reorder Point (Continuous Review)
+4. Fixed-Period Review Model (Periodic Review / Order-up-to Level)
+5. Newsvendor Model (Single-Period Stochastic Demand)
+6. Multicriteria Inventory Classification (Sales $ and Hits)
 """
 
 import math
@@ -16,7 +17,7 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 
-# Import our analytical modules
+# Import our analytical models
 from inventory_models import (
     calculate_eoq,
     calculate_quantity_discounts,
@@ -24,7 +25,7 @@ from inventory_models import (
     calculate_fixed_period_review,
     calculate_newsvendor,
 )
-from classification import classify_multicriteria, default_multicriteria_matrix
+from classification import classify_inventory_multicriteria
 
 # -----------------------------------------------------------------------------
 # APP CONFIGURATION
@@ -222,7 +223,6 @@ elif module == "2. Quantity Discount Analysis":
     st.subheader("Price Discount Tiers")
     st.write("Specify minimum quantity and price per unit for each tier.")
 
-    # Default 3-tier discount table
     default_tiers_df = pd.DataFrame(
         [
             {"Tier Name": "Tier 1", "Min Qty": 1, "Max Qty": 999, "Unit Price": 10.00},
@@ -263,7 +263,6 @@ elif module == "2. Quantity Discount Analysis":
         )
         st.metric("Minimum Total Annual Cost", f"${res['min_total_annual_cost']:,.2f}")
 
-        # Summary comparison table
         res_table = []
         for t in res["all_tiers"]:
             res_table.append(
@@ -481,94 +480,132 @@ elif module == "5. Newsvendor Model":
 elif module == "6. Multicriteria Inventory Classification":
     st.header("6. Multicriteria Inventory Classification")
     st.write(
-        "Performs joint inventory classification into Classes **A, B, C, and D** using both **Sales ($)** and **Hits**."
+        "Performs joint inventory classification into Classes **A, B, C, and D** using both **Sales ($)** and **Hits** "
+        "following the weighted scoring methodology (65% Sales + 35% Hits)."
     )
 
-    # Use the existing uploaded dataframe from st.session_state (do NOT create another uploader)
+    # Uses the existing uploaded DataFrame from st.session_state (no duplicate uploader created)
     df_data = st.session_state["inventory_df"]
 
     if df_data is None:
         st.warning(
-            "⚠️ No inventory file currently uploaded! Please upload your inventory CSV in the **sidebar** to run classification."
+            "⚠️ No inventory file currently uploaded! Please upload `ProjectDataV2_UTF8.csv` in the **sidebar** to run classification."
         )
         st.info(
-            "Expected columns in the CSV: `Item Number`, `Item Name`, `UoM`, `Sales ($)`, `Hits`."
+            "Expected columns: `Item Number`, `Item Name`, `UoM`, `Sales ($)`, `Hits`."
         )
     else:
-        st.success(f"Loaded DataFrame: **{len(df_data):,}** inventory items.")
-        
-        # Display preview
-        with st.expander("👁️ View Uploaded Data Preview", expanded=False):
-            st.dataframe(df_data.head(10), use_container_width=True)
+        st.success(f"Connected to Uploaded Data: **{len(df_data):,}** inventory items.")
 
-        # Detect columns
-        cols = list(df_data.columns)
-        sales_col_default = next((c for c in cols if "sales" in c.lower()), cols[0])
-        hits_col_default = next((c for c in cols if "hit" in c.lower()), cols[1] if len(cols) > 1 else cols[0])
+        # Verify required columns
+        req_cols = ["Item Number", "Item Name", "UoM", "Sales ($)", "Hits"]
+        missing_cols = [c for c in req_cols if c not in df_data.columns]
 
-        with st.expander("⚙️ Classification Parameters & Decision Matrix", expanded=True):
-            col_sel1, col_sel2 = st.columns(2)
-            with col_sel1:
-                sales_col = st.selectbox("Sales Column", cols, index=cols.index(sales_col_default))
-                st.markdown("**Sales Cumulative Cutoffs (%)**")
-                s_a = st.number_input("Sales Tier A Cutoff (%)", min_value=1.0, max_value=99.0, value=80.0, step=5.0)
-                s_b = st.number_input("Sales Tier B Cutoff (%)", min_value=1.0, max_value=99.0, value=95.0, step=5.0)
-                s_c = st.number_input("Sales Tier C Cutoff (%)", min_value=1.0, max_value=100.0, value=99.0, step=1.0)
-            with col_sel2:
-                hits_col = st.selectbox("Hits Column", cols, index=cols.index(hits_col_default))
-                st.markdown("**Hits Cumulative Cutoffs (%)**")
-                h_a = st.number_input("Hits Tier A Cutoff (%)", min_value=1.0, max_value=99.0, value=80.0, step=5.0)
-                h_b = st.number_input("Hits Tier B Cutoff (%)", min_value=1.0, max_value=99.0, value=95.0, step=5.0)
-                h_c = st.number_input("Hits Tier C Cutoff (%)", min_value=1.0, max_value=100.0, value=99.0, step=1.0)
+        if missing_cols:
+            st.error(f"Missing required columns in uploaded CSV: {missing_cols}")
+        else:
+            with st.expander("ℹ️ Methodology & Classification Rules", expanded=False):
+                st.markdown(
+                    """
+                    * **Single Criterion Cutoffs (unrounded cumulative %):**
+                      * **A**: Through 60% ($\le 60\%$)
+                      * **B**: Above 60% through 80% ($>60\%$ and $\le 80\%$)
+                      * **C**: Above 80% through 90% ($>80\%$ and $\le 90\%$)
+                      * **D**: Above 90% ($>90\%$)
+                      * *Ties:* Keep original CSV order (stable sort).
+                    * **Score Conversion:** $A = 4$, $B = 3$, $C = 2$, $D = 1$.
+                    * **Combined Score:** $0.65 \times \text{Sales Score} + 0.35 \times \text{Hits Score}$.
+                    * **Final Class Assignment:**
+                      * **A**: $\ge 3.25$
+                      * **B**: $2.50 \le \text{Score} < 3.25$ (lower bound inclusive, upper bound exclusive)
+                      * **C**: $1.75 \le \text{Score} < 2.50$ (lower bound inclusive, upper bound exclusive)
+                      * **D**: $< 1.75$
+                    """
+                )
 
-        if st.button("Run Multicriteria Classification", type="primary"):
-            sales_cutoffs = {"A": s_a, "B": s_b, "C": s_c, "D": 100.0}
-            hits_cutoffs = {"A": h_a, "B": h_b, "C": h_c, "D": 100.0}
-
-            df_classified, summary_df = classify_multicriteria(
+            # Perform classification automatically
+            df_result, summary_df = classify_inventory_multicriteria(
                 df=df_data,
-                sales_col=sales_col,
-                hits_col=hits_col,
-                sales_cutoffs=sales_cutoffs,
-                hits_cutoffs=hits_cutoffs,
+                item_col="Item Number",
+                sales_col="Sales ($)",
+                hits_col="Hits",
             )
 
-            # Store classified dataframe in session state
-            st.session_state["classified_df"] = df_classified
+            # Store in session state
+            st.session_state["classified_df"] = df_result
             st.session_state["summary_df"] = summary_df
 
-        if "classified_df" in st.session_state and st.session_state["classified_df"] is not None:
-            df_cls = st.session_state["classified_df"]
-            sum_df = st.session_state["summary_df"]
+            # Top KPI metrics
+            total_items = len(df_result)
+            total_sales = df_result["Sales ($)"].sum()
+            total_hits = df_result["Hits"].sum()
 
-            st.subheader("📊 Classification Summary")
-            st.dataframe(sum_df, use_container_width=True)
+            kpi1, kpi2, kpi3 = st.columns(3)
+            kpi1.metric("Total Inventory Items", f"{total_items:,}")
+            kpi2.metric("Total Sales Volume", f"${total_sales:,.2f}")
+            kpi3.metric("Total Warehouse Hits", f"{int(total_hits):,}")
 
-            # Overall metrics
-            tot_sales = df_cls[sales_col].sum()
-            tot_hits = df_cls[hits_col].sum()
-            tot_skus = len(df_cls)
+            # Summary Table
+            st.subheader("📊 Multicriteria Classification Summary")
+            st.dataframe(
+                summary_df.style.format(
+                    {
+                        "Item Count": "{:,}",
+                        "% of Total Items": "{:.2f}%",
+                        "Total Sales ($)": "${:,.2f}",
+                        "% of Total Sales": "{:.2f}%",
+                        "Total Hits": "{:,}",
+                        "% of Total Hits": "{:.2f}%",
+                    }
+                ),
+                use_container_width=True,
+            )
 
-            colA, colB, colC = st.columns(3)
-            colA.metric("Total Items (SKUs)", f"{tot_skus:,}")
-            colB.metric("Total Sales Volume", f"${tot_sales:,.2f}")
-            colC.metric("Total Warehouse Hits", f"{int(tot_hits):,}")
-
-            # Filterable view
-            st.subheader("📋 Item-Level Classification Results")
+            # Item-Level Detail Table
+            st.subheader("📋 Classified Inventory Items")
             filter_class = st.multiselect(
-                "Filter by Composite Class",
-                ["A", "B", "C", "D"],
+                "Filter by Final Class:",
+                options=["A", "B", "C", "D"],
                 default=["A", "B", "C", "D"],
             )
-            filtered_view = df_cls[df_cls["Composite_Class"].isin(filter_class)]
-            st.dataframe(filtered_view, use_container_width=True)
 
-            # CSV Download
-            csv_output = df_cls.to_csv(index=False).encode("utf-8")
+            display_cols = [
+                "Item Number",
+                "Item Name",
+                "UoM",
+                "Sales ($)",
+                "Sales_Cum_Pct",
+                "Sales_Class",
+                "Sales_Score",
+                "Hits",
+                "Hits_Cum_Pct",
+                "Hits_Class",
+                "Hits_Score",
+                "Combined_Score",
+                "Final_Class",
+            ]
+
+            filtered_df = df_result[df_result["Final_Class"].isin(filter_class)][display_cols]
+            
+            st.dataframe(
+                filtered_df.style.format(
+                    {
+                        "Sales ($)": "${:,.2f}",
+                        "Sales_Cum_Pct": "{:.2f}%",
+                        "Hits": "{:,}",
+                        "Hits_Cum_Pct": "{:.2f}%",
+                        "Combined_Score": "{:.2f}",
+                    }
+                ),
+                use_container_width=True,
+            )
+
+            # CSV Download Button
+            csv_data = df_result.to_csv(index=False).encode("utf-8")
             st.download_button(
-                label="📥 Download Classified Inventory CSV",
-                data=csv_output,
-                file_name="classified_inventory_dataset.csv",
+                label="📥 Download Classified Dataset (CSV)",
+                data=csv_data,
+                file_name="ProjectDataV2_Classified.csv",
                 mime="text/csv",
+                type="primary",
             )

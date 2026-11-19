@@ -1,159 +1,166 @@
 """
 Multicriteria Inventory Classification Module
-Performs ABC / ABCD inventory classification using both 'Sales ($)' and 'Hits'.
+Implements the exact UNCW SCM 517 multicriteria classification methodology:
+1. Separate ranking of Sales ($) and Hits (highest to lowest, stable sort preserving original CSV order for ties).
+2. Unrounded cumulative percentages:
+   - A: <= 60%
+   - B: > 60% and <= 80%
+   - C: > 80% and <= 90%
+   - D: > 90%
+3. Match classifications by Item Number.
+4. Convert classes to scores: A=4, B=3, C=2, D=1.
+5. Combined Score = (0.65 * Sales_Score) + (0.35 * Hits_Score).
+6. Final Class assignment:
+   - A: Combined Score >= 3.25
+   - B: 2.50 <= Combined Score < 3.25 (lower bound inclusive, upper bound exclusive)
+   - C: 1.75 <= Combined Score < 2.50 (lower bound inclusive, upper bound exclusive)
+   - D: Combined Score < 1.75
 """
 
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Tuple, Optional
+from typing import Tuple, Dict, Any
 
 
-def perform_single_criterion_classification(
+def assign_single_criterion_tier(cum_pct: float) -> str:
+    """
+    Assigns A, B, C, or D based on unrounded cumulative percentage:
+    - A: <= 60%
+    - B: > 60% through 80%
+    - C: > 80% through 90%
+    - D: > 90%
+    """
+    if cum_pct <= 60.0:
+        return "A"
+    elif cum_pct <= 80.0:
+        return "B"
+    elif cum_pct <= 90.0:
+        return "C"
+    else:
+        return "D"
+
+
+def assign_final_class(combined_score: float) -> str:
+    """
+    Assigns Final Class based on combined weighted score:
+    - A: >= 3.25
+    - B: 2.50 <= score < 3.25 (inclusive lower, exclusive upper)
+    - C: 1.75 <= score < 2.50 (inclusive lower, exclusive upper)
+    - D: < 1.75
+    """
+    if combined_score >= 3.25:
+        return "A"
+    elif combined_score >= 2.50:
+        return "B"
+    elif combined_score >= 1.75:
+        return "C"
+    else:
+        return "D"
+
+
+def classify_inventory_multicriteria(
     df: pd.DataFrame,
-    metric_col: str,
-    cutoffs: Dict[str, float] = None,
-    ascending: bool = False,
-    class_col_name: str = "Class",
-) -> pd.DataFrame:
-    """
-    Classifies inventory items based on a single metric using cumulative percentage.
-    
-    Parameters:
-    - df: Input DataFrame
-    - metric_col: Column to rank by ('Sales ($)' or 'Hits')
-    - cutoffs: Dict mapping Class to cumulative percentage threshold (e.g., {'A': 0.80, 'B': 0.95, 'C': 0.99, 'D': 1.00})
-    - class_col_name: Name of the resulting class column
-    """
-    if cutoffs is None:
-        cutoffs = {"A": 0.80, "B": 0.95, "C": 0.99, "D": 1.00}
-
-    df_out = df.copy()
-    
-    # Ensure metric is numeric
-    df_out[metric_col] = pd.to_numeric(df_out[metric_col], errors="coerce").fillna(0.0)
-    
-    # Sort descending
-    df_out = df_out.sort_values(by=metric_col, ascending=ascending)
-    
-    total_val = df_out[metric_col].sum()
-    if total_val == 0:
-        df_out[f"{metric_col} %"] = 0.0
-        df_out[f"{metric_col} Cum %"] = 0.0
-        df_out[class_col_name] = "D"
-        return df_out
-
-    # Calculate item percentage and cumulative percentage
-    df_out[f"{metric_col} %"] = (df_out[metric_col] / total_val) * 100.0
-    df_out[f"{metric_col} Cum %"] = df_out[f"{metric_col} %"].cumsum()
-
-    # Classification logic based on cumulative thresholds
-    # Note: Handles tie-breaking and edge cases
-    sorted_tiers = sorted(cutoffs.items(), key=lambda x: x[1])
-    
-    def assign_class(cum_pct):
-        # cum_pct is 0 to 100
-        for cls_name, threshold in sorted_tiers:
-            # threshold can be passed as fraction (0.80) or percentage (80.0)
-            t_val = threshold * 100.0 if threshold <= 1.0 else threshold
-            if cum_pct <= t_val:
-                return cls_name
-        return sorted_tiers[-1][0]
-
-    df_out[class_col_name] = df_out[f"{metric_col} Cum %"].apply(assign_class)
-    return df_out
-
-
-def default_multicriteria_matrix() -> Dict[Tuple[str, str], str]:
-    """
-    Standard Supply Chain 2D Decision Matrix mapping (Sales Class, Hits Class) -> Final Class (A, B, C, D).
-    
-    Sales \\ Hits |   A   |   B   |   C   |   D   |
-    -------------|-------|-------|-------|-------|
-          A      |   A   |   A   |   B   |   B   |
-          B      |   A   |   B   |   B   |   C   |
-          C      |   B   |   B   |   C   |   D   |
-          D      |   B   |   C   |   D   |   D   |
-    """
-    matrix = {
-        ("A", "A"): "A",
-        ("A", "B"): "A",
-        ("A", "C"): "B",
-        ("A", "D"): "B",
-        
-        ("B", "A"): "A",
-        ("B", "B"): "B",
-        ("B", "C"): "B",
-        ("B", "D"): "C",
-        
-        ("C", "A"): "B",
-        ("C", "B"): "B",
-        ("C", "C"): "C",
-        ("C", "D"): "D",
-        
-        ("D", "A"): "B",
-        ("D", "B"): "C",
-        ("D", "C"): "D",
-        ("D", "D"): "D",
-    }
-    return matrix
-
-
-def classify_multicriteria(
-    df: pd.DataFrame,
+    item_col: str = "Item Number",
     sales_col: str = "Sales ($)",
     hits_col: str = "Hits",
-    sales_cutoffs: Optional[Dict[str, float]] = None,
-    hits_cutoffs: Optional[Dict[str, float]] = None,
-    matrix_map: Optional[Dict[Tuple[str, str], str]] = None,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Performs multicriteria inventory classification using Sales ($) and Hits.
+    Performs multicriteria inventory classification on the uploaded DataFrame.
     
     Returns:
-    - df_classified: Original DataFrame with individual and composite classification columns added.
-    - summary_df: Summary metrics per final class (Item count, % Items, Total Sales, % Sales, Total Hits, % Hits).
+    - df_result: Complete DataFrame with all calculation steps, scores, and final classes.
+    - summary_df: Summary metrics per Final Class (Item count, % Items, Total Sales, % Sales, Total Hits, % Hits).
     """
-    if sales_cutoffs is None:
-        sales_cutoffs = {"A": 0.80, "B": 0.95, "C": 0.99, "D": 1.00}
-    if hits_cutoffs is None:
-        hits_cutoffs = {"A": 0.80, "B": 0.95, "C": 0.99, "D": 1.00}
-    if matrix_map is None:
-        matrix_map = default_multicriteria_matrix()
+    SCORE_MAP = {"A": 4, "B": 3, "C": 2, "D": 1}
 
-    # Step 1: Sales classification
-    df_sales = perform_single_criterion_classification(
-        df, metric_col=sales_col, cutoffs=sales_cutoffs, class_col_name="Sales_Class"
-    )
+    # Work on a copy with original row order index preserved
+    df_work = df.copy()
+    df_work["_orig_order"] = np.arange(len(df_work))
+
+    # Clean numeric columns
+    df_work[sales_col] = pd.to_numeric(df_work[sales_col], errors="coerce").fillna(0.0)
+    df_work[hits_col] = pd.to_numeric(df_work[hits_col], errors="coerce").fillna(0.0)
+
+    # -------------------------------------------------------------------------
+    # 1. SALES CLASSIFICATION
+    # Rank highest to lowest. Keep original CSV order for ties (kind='mergesort' / stable).
+    # -------------------------------------------------------------------------
+    total_sales = df_work[sales_col].sum()
+    df_sales_sorted = df_work.sort_values(
+        by=sales_col, ascending=False, kind="mergesort"
+    ).copy()
     
-    # Step 2: Hits classification
-    df_hits = perform_single_criterion_classification(
-        df, metric_col=hits_col, cutoffs=hits_cutoffs, class_col_name="Hits_Class"
+    if total_sales > 0:
+        df_sales_sorted["Sales_Cum_Pct"] = (
+            df_sales_sorted[sales_col].cumsum() / total_sales
+        ) * 100.0
+    else:
+        df_sales_sorted["Sales_Cum_Pct"] = 100.0
+
+    df_sales_sorted["Sales_Class"] = df_sales_sorted["Sales_Cum_Pct"].apply(
+        assign_single_criterion_tier
+    )
+    df_sales_sorted["Sales_Score"] = df_sales_sorted["Sales_Class"].map(SCORE_MAP)
+
+    # -------------------------------------------------------------------------
+    # 2. HITS CLASSIFICATION
+    # Rank highest to lowest. Keep original CSV order for ties (kind='mergesort' / stable).
+    # -------------------------------------------------------------------------
+    total_hits = df_work[hits_col].sum()
+    df_hits_sorted = df_work.sort_values(
+        by=hits_col, ascending=False, kind="mergesort"
+    ).copy()
+    
+    if total_hits > 0:
+        df_hits_sorted["Hits_Cum_Pct"] = (
+            df_hits_sorted[hits_col].cumsum() / total_hits
+        ) * 100.0
+    else:
+        df_hits_sorted["Hits_Cum_Pct"] = 100.0
+
+    df_hits_sorted["Hits_Class"] = df_hits_sorted["Hits_Cum_Pct"].apply(
+        assign_single_criterion_tier
+    )
+    df_hits_sorted["Hits_Score"] = df_hits_sorted["Hits_Class"].map(SCORE_MAP)
+
+    # -------------------------------------------------------------------------
+    # 3. MATCH BY ITEM NUMBER & COMBINE SCORES
+    # -------------------------------------------------------------------------
+    # Extract sales attributes
+    sales_subset = df_sales_sorted[
+        [item_col, "Sales_Cum_Pct", "Sales_Class", "Sales_Score"]
+    ]
+    
+    # Extract hits attributes
+    hits_subset = df_hits_sorted[
+        [item_col, "Hits_Cum_Pct", "Hits_Class", "Hits_Score"]
+    ]
+
+    # Merge back to original DataFrame to maintain original order
+    df_merged = df_work.merge(sales_subset, on=item_col, how="left")
+    df_merged = df_merged.merge(hits_subset, on=item_col, how="left")
+
+    # Restore exact original row order
+    df_merged = df_merged.sort_values(by="_orig_order").drop(columns=["_orig_order"])
+
+    # 4. Calculate Combined Score: 65% Sales Score + 35% Hits Score
+    df_merged["Combined_Score"] = (
+        0.65 * df_merged["Sales_Score"] + 0.35 * df_merged["Hits_Score"]
     )
 
-    # Merge or align
-    df_classified = df.copy()
-    df_classified["Sales_Class"] = df_sales["Sales_Class"]
-    df_classified["Sales_Cum_Pct"] = df_sales[f"{sales_col} Cum %"].round(2)
-    df_classified["Hits_Class"] = df_hits["Hits_Class"]
-    df_classified["Hits_Cum_Pct"] = df_hits[f"{hits_col} Cum %"].round(2)
+    # 5. Assign Final Class
+    df_merged["Final_Class"] = df_merged["Combined_Score"].apply(assign_final_class)
 
-    # Step 3: Composite Multicriteria Class
-    def map_composite(row):
-        s_cls = str(row["Sales_Class"]).strip().upper()
-        h_cls = str(row["Hits_Class"]).strip().upper()
-        return matrix_map.get((s_cls, h_cls), "C")
-
-    df_classified["Composite_Class"] = df_classified.apply(map_composite, axis=1)
-
-    # Generate Summary Table
-    total_items = len(df_classified)
-    total_sales = df_classified[sales_col].sum()
-    total_hits = df_classified[hits_col].sum()
-
+    # -------------------------------------------------------------------------
+    # 6. GENERATE SUMMARY TABLE
+    # Metrics per class: Item count, % items, Total Sales, % Sales, Total Hits, % Hits
+    # -------------------------------------------------------------------------
+    total_items = len(df_merged)
     summary_rows = []
     classes = ["A", "B", "C", "D"]
+
     for cls in classes:
-        cls_df = df_classified[df_classified["Composite_Class"] == cls]
+        cls_df = df_merged[df_merged["Final_Class"] == cls]
         item_count = len(cls_df)
         item_pct = (item_count / total_items * 100.0) if total_items > 0 else 0.0
         cls_sales = cls_df[sales_col].sum()
@@ -171,5 +178,16 @@ def classify_multicriteria(
             "% of Total Hits": round(hits_pct, 2),
         })
 
+    # Add Total / Summary Row
+    summary_rows.append({
+        "Class": "Total",
+        "Item Count": total_items,
+        "% of Total Items": 100.0,
+        "Total Sales ($)": round(total_sales, 2),
+        "% of Total Sales": 100.0,
+        "Total Hits": int(total_hits),
+        "% of Total Hits": 100.0,
+    })
+
     summary_df = pd.DataFrame(summary_rows)
-    return df_classified, summary_df
+    return df_merged, summary_df
